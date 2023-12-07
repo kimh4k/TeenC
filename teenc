@@ -1,0 +1,131 @@
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler, CallbackQueryHandler
+import os
+
+TOKEN = '6395213945:AAHHcYa3r-0ZWwCU7_rTI6m7rGvzuyCCINg'
+OWNER_CHAT_ID = '-1002104404181'
+
+menu = {
+    '1': {'item': 'Croissant', 'price': 1.00},
+    '2': {'item': 'Croissant-chocolate', 'price': 1.00},
+    '3': {'item': 'Croissant-danish', 'price': 1.00},
+    '4': {'item': 'Donut-suggar', 'price': 0.50},
+    '5': {'item': 'Sandwich', 'price': 1.00},
+    '6': {'item': 'Potato chip', 'price': 1.00},
+}
+
+ORDERING, ASK_QUANTITY, ADD_MORE = range(3)
+
+def send_local_photo(update: Update, context: CallbackContext, photo_filename: str, caption: str):
+    images_directory = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'images')
+
+    photo_path = os.path.join(images_directory, photo_filename)
+
+    response = context.bot.send_photo(chat_id=update.message.chat_id, photo=open(photo_path, 'rb'), caption=caption)
+    file_id = response.photo[-1].file_id
+
+    return file_id
+
+def start(update: Update, context: CallbackContext) -> int:
+    user_first_name = update.message.from_user.first_name
+    user_last_name = update.message.from_user.last_name
+    welcome_message = (
+        f"Welcome to TeenC Ordering Bot, {user_first_name} {user_last_name}!\n"
+        f"Please tap on an item number below to place an order:"
+    )
+
+    menu_items = "\n".join([f"{item} - {details['item'].capitalize()} (${details['price']})" for item, details in menu.items()])
+    
+    # Upload the local menu photo and get the file ID
+    menu_photo_filename = 'menu.jpg'
+    menu_photo_caption = "Check out our menu:"
+    menu_photo_file_id = send_local_photo(update, context, menu_photo_filename, menu_photo_caption)
+
+    keyboard = [[InlineKeyboardButton(f"{item}", callback_data=item) for item, details in menu.items()]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    update.message.reply_text(f"{welcome_message}\n{menu_items}", reply_markup=reply_markup)
+    return ORDERING
+
+def list_items(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    item_id = query.data
+    context.user_data['selected_item'] = item_id
+
+    query.edit_message_text(
+        f"You selected: {menu[item_id]['item'].capitalize()}\n"
+        f"Please enter the quantity."
+    )
+
+    return ASK_QUANTITY
+
+def ask_quantity(update: Update, context: CallbackContext) -> int:
+    user_id = update.message.from_user.id
+    user_first_name = update.message.from_user.first_name
+    user_last_name = update.message.from_user.last_name
+    quantity = update.message.text
+
+    if not quantity.isdigit() or int(quantity) <= 0:
+        update.message.reply_text("Invalid quantity. Please enter a positive integer.")
+        return ASK_QUANTITY
+
+    selected_item_id = context.user_data.get('selected_item')
+    if selected_item_id in menu:
+        item_details = menu[selected_item_id]
+        total_price = item_details['price'] * int(quantity)
+        order_message = (
+            f"New order from {user_first_name} {user_last_name} ({user_id}):\n"
+            f"{item_details['item'].capitalize()} - Quantity: {quantity} - Total Price: ${total_price:.2f}"
+        )
+        context.bot.send_message(chat_id=OWNER_CHAT_ID, text=order_message)
+        update.message.reply_text(
+            f"Thank you for ordering {quantity} {item_details['item'].capitalize()}! We'll prepare it for you."
+        )
+
+        # Send the QR code for payment
+        qr_code_filename = 'qrcode.png'
+        qr_code_caption = "Scan the QR code for payment or Pay by cash:"
+        qr_code_file_id = send_local_photo(update, context, qr_code_filename, qr_code_caption)
+        
+        # Ask if the user wants to order more
+        update.message.reply_text("Do you want to order more items? \nReply with /menu to see the available items or /end to finish.")
+        return ADD_MORE
+    else:
+        update.message.reply_text("Sorry, the selected item is not available. Please check the menu with /menu.")
+        return ORDERING
+
+def add_more(update: Update, context: CallbackContext) -> int:
+    user_response = update.message.text.lower()
+
+    if user_response == '/end':
+        update.message.reply_text("Thank you for your orders. If you have any more questions or requests, feel free to ask.")
+        return ConversationHandler.END
+    else:
+        context.user_data.pop('selected_item', None)
+
+        return start(update, context)
+
+def main() -> None:
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            ORDERING: [CallbackQueryHandler(list_items)],
+            ASK_QUANTITY: [MessageHandler(Filters.text & ~Filters.command, ask_quantity)],
+            ADD_MORE: [MessageHandler(Filters.text & ~Filters.command, add_more)],
+        },
+        fallbacks=[
+            CommandHandler("menu", start),  # New handler for /menu command
+            CommandHandler("end", lambda update, context: ConversationHandler.END)  # New handler for /end command
+        ],
+    )
+
+    dp.add_handler(conv_handler)
+
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
